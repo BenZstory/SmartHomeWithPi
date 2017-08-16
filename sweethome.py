@@ -91,8 +91,18 @@ class CmdCronInfo(db.Model):
 
 def send_cmd(cmd):
     subprocess.Popen(cmd, shell=True)
-    ret = cmd + ' sent successfully.'
-    return {'msg': ret}
+    ret_data = {'notify': cmd + ' sent successfully'}
+    return build_json_ret(0, ret_data)
+
+
+def build_json_ret(code, data):
+    if code == 0:
+        return {'Code': 0,
+                'Message': 'Success',
+                'Data': data}
+    else:
+        return {'Code': code,
+                'Message': data}
 
 
 class AirCtl(Resource):
@@ -150,15 +160,16 @@ class ScheduleJob(Resource):
         db.session.commit()
         json_str = json.dumps(cron_info.to_json)
         logging.info('json_str : %s', json_str)
-        return json_str + '  is scheduled'
+        ret_data = {'id': cron_info.id}
+        return build_json_ret(0, ret_data)
 
 
 class GetAllJobs(Resource):
     def get(self):
         logging.info('getting all scheduled jobs')
         cron_iter = CmdCronInfo.query.all()
-        jsonstr = jsonify([i.to_json for i in cron_iter])
-        return jsonstr
+        json_array = jsonify([i.to_json for i in cron_iter])
+        return json_array
 
 
 class ClearAllJobs(Resource):
@@ -174,7 +185,8 @@ class ClearAllJobs(Resource):
         for item in cron_iter:
             db.session.delete(item)
         db.session.commit()
-        return "schedules all removed successfully"
+        ret_data = {'notify': 'schedules all removed successfully'}
+        return build_json_ret(0, ret_data)
 
 
 api.add_resource(AirCtl, '/ircmd')
