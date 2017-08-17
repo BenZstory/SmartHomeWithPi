@@ -2,6 +2,7 @@ from flask import Flask, request, json, jsonify
 from flask_restful import Resource, Api, reqparse, abort
 import subprocess
 import logging
+import re
 
 # from models import CmdCronInfo
 from logging.config import fileConfig
@@ -20,7 +21,8 @@ logging.basicConfig(filename='log_sweet_home.log', level=logging.INFO, format='%
 logging.info('test logger start...')
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/test.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/benjamin/project/SweetHome/db/test.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
 api = Api(app)
 db = SQLAlchemy(app)
 
@@ -31,6 +33,7 @@ parser.add_argument('degree', type=int, required=True)
 parser.add_argument('wind', type=int, required=True)
 
 cronParser = reqparse.RequestParser()
+cronParser.add_argument('id', type=int, required=False)
 cronParser.add_argument('day', type=int, required=True)
 cronParser.add_argument('hour', type=int, required=True)
 cronParser.add_argument('minute', type=int, required=True)
@@ -58,7 +61,7 @@ class CmdCronInfo(db.Model):
         self.hour = hour
         self.minute = minute
 
-    def set_cmd(self, mode, degree, wind):
+    def set_cmd(self, mode='COOL', degree=25, wind=0):
         self.mode = mode
         self.degree = degree
         self.wind = wind
@@ -105,6 +108,47 @@ def build_json_ret(code, data):
                 'Message': data}
 
 
+def add_to_crontab(cron_info: CmdCronInfo):
+    if cron_info.toggle:
+        cmd = 'irsend SEND_ONCE haierac HAIER_%s_%d_%d' % (cron_info.mode, cron_info.degree, cron_info.wind)
+    else:
+        cmd = 'irsend SEND_ONCE haierac HAIER_CLOSE'
+
+    comment_filter = 'air_ctl no_' + str(cron_info)
+    cron.remove_all(comment=comment_filter)
+
+    job = cron.new(command=cmd, comment='air_ctl')
+    cron_info.day
+    if cron_info.day == 0:
+        job.day.every(1)
+    elif cron_info.day == 1:
+        job.dow.on('MON', 'TUE', 'WED', 'THU', 'FRI')
+    elif cron_info.day == 2:
+        job.dow.on('SAT', 'SUN')
+    else:
+        job.day.every(1)
+
+    job.hour.on(cron_info.hour)
+    job.minute.on(cron_info.minute)
+    job.enable()
+    job.set_comment('air_ctl no_' + str(cron_info.id))
+    cron.write_to_user(user=True)
+    return True
+
+
+def reload_from_db():
+    logging.info('reloading from previous data')
+    pre_iter = cron.find_comment(re.compile("^air_ctl"))
+    for job in pre_iter:
+        logging.info("removing job %s", job)
+        cron.remove(job)
+    cron.write_to_user(user=True)
+    cron_iter = CmdCronInfo.query.all()
+    for cron_item in cron_iter:
+        add_to_crontab(cron_item)
+    cron.write_to_user(user=True)
+
+
 class AirCtl(Resource):
     def post(self):
         logging.info('AirCtl called')
@@ -132,34 +176,40 @@ class ScheduleJob(Resource):
         logging.info('ScheduleJob called')
         args = cronParser.parse_args()
 
-        toggle = args['toggle']
-        if toggle:
-            cmd = 'irsend SEND_ONCE haierac HAIER_%s_%d_%d' % (args['mode'], args['degree'], args['wind'])
-        else:
-            cmd = 'irsend SEND_ONCE haierac HAIER_CLOSE'
-
-        new_job = cron.new(command=cmd, comment='air_ctl')
-
-        if args['day'] == 0:
-            new_job.day.every(1)
-        elif args['day'] == 1:
-            new_job.dow.on('MON', 'TUE', 'WED', 'THU', 'FRI')
-        elif args['day'] == 2:
-            new_job.dow.on('SAT', 'SUN')
-        else:
-            new_job.day.every(1)
-
-        new_job.hour.on(args['hour'])
-        new_job.minute.on(args['minute'])
-        new_job.enable()
-        cron.write_to_user(user=True)
-
-        cron_info = CmdCronInfo(toggle, args['day'], args['hour'], args['minute'])
+        # add to db
+        cron_info = CmdCronInfo(args['toggle'], args['day'], args['hour'], args['minute'])
         cron_info.set_cmd(args['mode'], args['degree'], args['wind'])
         db.session.add(cron_info)
         db.session.commit()
+
+        add_to_crontab(cron_info)
+
         json_str = json.dumps(cron_info.to_json)
-        logging.info('json_str : %s', json_str)
+        logging.info('add json_str : %s', json_str)
+        ret_data = {'id': cron_info.id}
+        return build_json_ret(0, ret_data)
+
+
+class UpdateJob(Resource):
+    def post(self):
+        logging.info('UpdateJob called')
+        args = cronParser.parse_args()
+        cron_info = CmdCronInfo.query.filter_by(id=args['id']).first_or_404()
+        cron_info.toggle = args['toggle']
+        cron_info.set_cmd(args['mode'], args['degree'], args['wind'])
+        cron_info.day = args['day']
+        cron_info.hour = args['hour']
+        cron_info.minute = args['minute']
+
+        db.session.add(cron_info)
+        json_str = json.dumps(cron_info.to_json)
+        logging.info('update json_str to db : %s', json_str)
+        db.session.commit()
+
+        add_to_crontab(cron_info)
+
+        json_str = json.dumps(cron_info.to_json)
+        logging.info('update json_str : %s', json_str)
         ret_data = {'id': cron_info.id}
         return build_json_ret(0, ret_data)
 
@@ -175,10 +225,10 @@ class GetAllJobs(Resource):
 class ClearAllJobs(Resource):
     def get(self):
         logging.info('clearing all scheduled jobs')
-        pre_iter = cron.find_comment('air_ctl')
+        pre_iter = cron.find_comment(re.compile('^air_ctl'))
         for job in pre_iter:
             logging.info("removing job %s", job)
-        cron.remove_all(comment='air_ctl')
+            cron.remove(job)
         cron.write_to_user(user=True)
 
         cron_iter = CmdCronInfo.query.all()
@@ -195,7 +245,10 @@ api.add_resource(ShutDownAirCtl, '/air_ctl_close')
 api.add_resource(ScheduleJob, '/set_cron')
 api.add_resource(GetAllJobs, '/get_cron')
 api.add_resource(ClearAllJobs, '/clear_cron')
+api.add_resource(UpdateJob, '/update_cron')
+
 db.create_all()
+reload_from_db()
 
 
 if __name__ == '__main__':
