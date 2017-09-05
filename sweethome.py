@@ -44,6 +44,8 @@ cronParser.add_argument('wind', type=int, required=False)
 
 cron = CronTab(user=True)
 
+WEEK_ENUM = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+
 
 class CmdCronInfo(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -114,19 +116,18 @@ def add_to_crontab(cron_info: CmdCronInfo):
     else:
         cmd = 'irsend SEND_ONCE haierac HAIER_CLOSE'
 
-    comment_filter = 'air_ctl no_' + str(cron_info)
+    comment_filter = 'air_ctl no_' + str(cron_info.id)
     cron.remove_all(comment=comment_filter)
 
     job = cron.new(command=cmd, comment='air_ctl')
-    cron_info.day
-    if cron_info.day == 0:
+
+    if cron_info.day == 255:
         job.day.every(1)
-    elif cron_info.day == 1:
-        job.dow.on('MON', 'TUE', 'WED', 'THU', 'FRI')
-    elif cron_info.day == 2:
-        job.dow.on('SAT', 'SUN')
     else:
-        job.day.every(1)
+        dow_flags = cron_info.day
+        for i in range(1, 7):                   # ignore flags[0]
+            if (dow_flags >> i) & 1:
+                job.dow.on(WEEK_ENUM[i], also=True)        # also=true,
 
     job.hour.on(cron_info.hour)
     job.minute.on(cron_info.minute)
